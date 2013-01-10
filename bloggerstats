@@ -1,0 +1,394 @@
+#!/usr/bin/perl -CS
+
+# BEWARE: script requires external programs: sed, curl and ngrep (when using
+#         option -w). Program curl is used with sudo and requires sudoers
+#         support: to achieve this login as root and print in a terminal
+#
+#         visudo /etc/sudoers.d/users
+#
+#         and put there lines
+#
+#         Cmnd_Alias      NETTASKS = /usr/sbin/ngrep
+#         <your-login-id> ALL = NOPASSWD: NETTASKS
+#
+#         where <your-login-d> is your system login name.
+
+use Getopt::Std;
+use JSON qw'decode_json';
+use POSIX qw'ceil strftime';
+use URI::Escape qw'uri_unescape';
+use Encode qw'decode';
+
+my $VERSION = "1.0";
+( my $PROGNAME = $0 ) =~ s/.*\///;
+
+
+sub VERSION_MESSAGE
+{
+    PrintUsage();
+    exit 0;
+}
+
+my $default_conf       = "$ENV{ HOME }/.${PROGNAME}rc";
+my $default_image_path = '.';
+my $default_period     = 'now';
+
+
+sub PrintUsage
+{
+    print "$PROGNAME, version $VERSION\n";
+    print "\nUsage: $PROGNAME [-d] [-x conf] [-P period] [-t] [-g -r path ] ";
+    print                    "[-pksucbov]\n";
+    print "\t-d            - print debug information (JSON structure)\n";
+    print "\t-x conf       - read configuration from specified file\n";
+    print "\t                (default value is '$default_conf')\n";
+    print "\t-P period     - get statistics during specified period:\n";
+    print "\t                'now', 'day', 'week', 'month' or 'all'\n";
+    print "\t                (default value is '$default_period')\n";
+    print "\t-t            - print data in pretty tables\n";
+    print "\t-g            - create a chart in PNG format\n";
+    print "\t-r path       - save the chart in the specified path\n";
+    print "\t                (default value is '$default_image_path')\n";
+    print "\t-p            - show pages\n";
+    print "\t-k            - show keywords\n";
+    print "\t-s            - show sites\n";
+    print "\t-u            - show URLs\n";
+    print "\t-c            - show contries\n";
+    print "\t-b            - show browsers\n";
+    print "\t-o            - show OSes\n";
+    print "\t-v            - show overview\n";
+    print "\n   or  $PROGNAME -w [-d] [-x conf]\n";
+    print "\t-w            - wait for stats events from a browser and update\n";
+    print "\t-d            - print debug information (POSTed data)\n";
+    print "\t                xsrf token in the configuration file\n";
+    print "\t-x conf       - write xsrf token into the specified ";
+    print                   "configuration file\n";
+    print "\n   or  $PROGNAME -h | --help\n";
+    print "\t-h or --help  - print this help message and exit\n";
+}
+
+sub PrintOverview
+{
+    my ( $ov ) = @_;
+
+    return unless defined $ov && @$ov > 0;
+
+    my @period = ( undef, 'Today', 'Yesterday', 'Last month', 'All time' );
+
+    if ( $opt_t )
+    {
+        my $table = Text::TabularDisplay->new( 'Overview', '' );
+        $table->add( $period[ $_ ], $$ov[ $_ ] ) for ( 1 .. 4 );
+        print $table->render . "\n";
+        return;
+    }
+
+    print $period[ $_ ] . '  ' . $$ov[ $_ ] . "\n" for ( 1 .. 4 );
+}
+
+sub PrintData
+{
+    my ( $layout, $max_length, $decode_urls ) = @_;
+
+    die 'Internal error: missing data layout' unless defined $layout;
+
+    return unless defined $$layout[ 1 ] && @{ $$layout[ 1 ] } > 0;
+
+    if ( $opt_t )
+    {
+        my $table = Text::TabularDisplay->new( $$layout[ 0 ], '' );
+        $table->add( substr( $decode_urls && $$layout[ 0 ] eq 'URL' ?
+                        decode( 'utf8', uri_unescape( $$_[ $$layout[ 2 ] ] ) ) :
+                        $$_[ $$layout[ 2 ] ], 0, $max_length ),
+                     substr( $$_[ $$layout[ 3 ] ], 0, $max_length ) )
+                                                    foreach @{ $$layout[ 1 ] };
+        print $table->render . "\n";
+        return;
+    }
+
+    print substr( $decode_urls && $$layout[ 0 ] eq 'URL' ?
+                        decode( 'utf8', uri_unescape( $$_[ $$layout[ 2 ] ] ) ) :
+                        $$_[ $$layout[ 2 ] ], 0, $max_length ) . '  ' .
+          substr( $$_[ $$layout[ 3 ] ], 0, $max_length ) . "\n"
+                                                    foreach @{ $$layout[ 1 ] };
+}
+
+sub CeilRound
+{
+    no integer;
+
+    my ( $value ) = @_;
+    my $divisor = 2;
+
+    foreach my $i ( 1000000, 100000, 10000, 1000, 100, 10 )
+    {
+        if ( $value > $i )
+        {
+            $divisor = $i;
+            last;
+        }
+    }
+
+    $value /= $divisor;
+    $value = ceil $value;
+    $value *= $divisor;
+
+    $value;
+}
+
+
+# MAIN LOOP BEGIN
+
+getopts "hwdx:P:gr:tpksucbov";
+
+if ( $opt_h )
+{
+    PrintUsage;
+    exit 0;
+}
+
+my $debug = $opt_d;
+
+my $conf = $opt_x || $default_conf;
+
+do $conf or die "Configuration file '$conf' is not available";
+
+if ( $opt_w )
+{
+    my $sniffer   = 'sudo ngrep -q -A2 -l -Wbyline';
+    my $match     = 'POST';
+    my $cond      = "tcp and port 80 and dst host $bloghost";
+    my $packets   = 0;
+    my $post_data = 0;
+
+    my ( $hdr_ctype, $hdr_xgwtpermut, $hdr_xgwtmodulebase, $hdr_cookie, $xsrf );
+    my ( $cur_hdr, $cur_hdr_start ) = ( undef, '' );
+
+    my $pid = open SNIFF, "$sniffer '$match' $cond |" or die $!;
+
+    while ( <SNIFF> )
+    {
+        if ( /^T\s+(?:\d{1,3}\.){3}\d{1,3}:(?:\d{1,5})\s*->/ )
+        {
+            ++$packets;
+            chomp $cur_hdr_start if defined $cur_hdr_start;
+            next;
+        }
+        next unless $packets;
+        next if /^$/;
+
+        if ( /^\.$/ )
+        {
+            $post_data = 1;
+            next;
+        }
+
+        $cur_hdr = $cur_hdr_start . $_;
+
+        if ( /^.+\.$/ )
+        {
+            $post_data = 0;
+        }
+        else
+        {
+            $cur_hdr_start .= $_;
+            next unless $post_data;
+        }
+
+        $cur_hdr_start = '' unless $post_data;
+
+        print $cur_hdr if $debug;
+
+        SWITCH_HDR_CONTENT:
+        {
+            if ( $cur_hdr =~ /^Content-Type:\s*(.+)\.$/i )
+            {
+                $hdr_ctype = $1;
+                last SWITCH_HDR_CONTENT;
+            }
+            if ( $cur_hdr =~ /^X-GWT-Permutation:\s*(\S+)\.$/i )
+            {
+                $hdr_xgwtpermut = $1;
+                last SWITCH_HDR_CONTENT;
+            }
+            if ( $cur_hdr =~ /^X-GWT-Module-Base:\s*(\S+)\.$/i )
+            {
+                $hdr_xgwtmodulebase = $1;
+                last SWITCH_HDR_CONTENT;
+            }
+            if ( $cur_hdr =~ /^Cookie:\s*(.+)\.$/i )
+            {
+                $hdr_cookie = $1;
+                last SWITCH_HDR_CONTENT;
+            }
+            if ( $cur_hdr =~ /"xsrf":"(\S+)"/ )
+            {
+                $xsrf = $1;
+                last SWITCH_HDR_CONTENT;
+            }
+        }
+
+        last if defined $hdr_ctype && defined $hdr_xgwtpermut &&
+                defined $hdr_xgwtmodulebase && defined $hdr_cookie &&
+                defined $xsrf;
+    }
+
+    kill SIGINT, $pid;
+
+    close SNIFF;
+
+    # delete old autogenerated data from the configuration file
+    system( "sed -i '/^#\\s*AUTOGENERATED/q' $conf" ) == 0 or die $!;
+
+    my $data = "\@headers = (q(Content-Type: $hdr_ctype), " .
+               "q(X-GWT-Permutation: $hdr_xgwtpermut), " .
+               "q(X-GWT-Module-Base: $hdr_xgwtmodulebase));\\n" .
+               "\$cookie = q($hdr_cookie);\\n\$xsrf = q($xsrf);";
+
+    # append new autogenerated data to the configuration file
+    system( "echo -e '$data' >> $conf" ) == 0 or die $!;
+
+    exit 0;
+}
+
+my %period = ( "now" => 0, "day" => 1, "week" => 2, "month" => 3, "all" => 4 );
+
+if ( $opt_P && ! exists $period{ $opt_P } )
+{
+    PrintUsage;
+    exit 1;
+}
+
+my $period  = $opt_P ? $period{ $opt_P } : $period{ $default_period };
+
+my $method  = qq'{"method":"getStats","params":{"1":$period},"xsrf":"$xsrf"}';
+
+my $headers = "-H '" . join( "' -H '", @headers ) . "'";
+
+my $query   = "-b '$cookie' $headers -d '$method' '$statsurl'";
+
+open QUERY, "curl -s $query |" or die $!;
+
+my @response = <QUERY>;
+
+close QUERY;
+
+my $data    = decode_json( join '', @response );
+
+my $result  = $$data{ result };
+
+die "Response does not contain result" unless defined $result;
+
+if ( $debug )
+{
+    require Data::Dumper;
+    Data::Dumper->import( qw'Dumper' );
+
+    print Dumper( $result );
+}
+
+my ( $graph, $pages, $keywords, $sites, $urls, $countries, $browsers, $oses ) =
+            ( \@{ $$result[ 2 ] }, \@{ $$result[ 4 ] }, \@{ $$result[ 6 ] },
+              \@{ $$result[ 7 ] }, \@{ $$result[ 8 ] }, \@{ $$result[ 9 ] },
+              \@{ $$result[ 10 ] }, \@{ $$result[ 11 ] } );
+
+my %data_layout = ( 'p' => [ 'Page', $pages, 1, 6 ],
+                    'k' => [ 'Keyword', $keywords, 1, 6 ],
+                    's' => [ 'Site', $sites, 1, 6 ],
+                    'u' => [ 'URL', $urls, 1, 6 ],
+                    'c' => [ 'Country', $countries, 1, 6 ],
+                    'b' => [ 'Browser', $browsers, 1, 6 ],
+                    'o' => [ 'OS', $oses, 1, 6 ] );
+
+my $print_all = ! $opt_p && ! $opt_k && ! $opt_s && ! $opt_u && ! $opt_c &&
+                ! $opt_b && ! $opt_o && ! $opt_v;
+
+require Text::TabularDisplay if $opt_t;
+
+PrintOverview $$result[ 3 ] if defined $opt_v || $print_all;
+
+my $max_column_length = 80;
+my $decode_urls       = 1;
+
+foreach my $type ( qw'p k s u c b o' )
+{
+    PrintData $data_layout{ $type }, $max_column_length, $decode_urls
+                                if defined ${ "opt_" . $type } || $print_all;
+}
+
+if ( $opt_g )
+{
+    require Chart::Bars;
+    require Time::Local;
+    Time::Local->import( qw'timelocal' );
+
+    use integer;
+
+    my $u_sec     = 1;
+    my $u_min     = 60 * $u_sec;
+    my $u_hour    = 60 * $u_min;
+    my $u_day     = 24 * $u_hour;
+    my $u_week    = 7  * $u_day;
+    my $u_month   = 30 * $u_day;
+
+    my $period    = $opt_P || $default_period;
+    my $now       = time;
+    my $timestamp = strftime( "%Y/%m/%d %H:%M:%S", localtime $now );
+    my $x_skip    = @$graph / 4;
+    my $max_y     = CeilRound( ( sort { $b <=> $a } @$graph )[ 0 ] );
+    my $y_skip    = $max_y / 8;
+
+    my $image = Chart::Bars->new( 800, 600 );
+    $image->set( 'title' => "Visitors per $period ($timestamp)",
+                 'legend' => 'none', 'grid_lines' => 1, 'spaced_bars' => 0,
+                 'skip_x_ticks' => $x_skip, 'skip_int_ticks' => $y_skip,
+                 'integer_ticks_only' => 1, 'min_val' => 0, 'max_val' => $max_y,
+                 'colors' => { 'grid_lines' => [ 160, 160, 160 ],
+                               'dataset0'   => [   0, 160,  80 ] } );
+
+    $timestamp = strftime( "%Y%m%d-%H-%M-%S", localtime( $now ) );
+
+    my ( $now_sec, $now_min, $now_hour, $now_day, $now_month, $now_year ) =
+                                                                localtime $now;
+
+    my $all_start = timelocal( 0, 0, 0, 1, $start_month - 1, $start_year );
+
+    my %x_range_start = ( "now" => $now - 2 * $u_hour + $u_min,
+                          "day" => $now - $u_day, "week" => $now - $u_week,
+                          "month" => $now - $u_month, "all" => $all_start );
+
+    my ( $sec, $min, $hour, $day, $month, $year ) =
+                                            localtime $x_range_start{ day };
+    $x_range_start{ day }   = timelocal( 0, 0, $hour, $day, $month, $year ) +
+                                            $u_hour;
+
+    ( $sec, $min, $hour, $day, $month, $year ) =
+                                            localtime $x_range_start{ week };
+    $x_range_start{ week }  = timelocal( 0, 0, $hour, $day, $month, $year ) +
+                                            $u_hour;
+
+    ( $sec, $min, $hour, $day, $month, $year ) =
+                                            localtime $x_range_start{ month };
+    $x_range_start{ month } = timelocal( 0, 0, 0, $day, $month, $year ) +
+                                            $u_day;
+
+    my %x_range_bin   = ( "now" => $u_min, "day" => $u_hour, "week" => $u_hour,
+                          "month" => $u_day, "all" => $u_month + $u_day );
+
+    my %x_tick_format = ( "now" => "%H:%M", "day" => "%H:%M",
+                          "week" => "%d.%m.%y", "month" => "%d.%m.%Y",
+                          "all" => "%Y/%m" );
+    my @ticks;
+    for ( my $i = 0; $i < @$graph; ++$i )
+    {
+        $ticks[ $i ] = strftime( $x_tick_format{ $period },
+                                localtime $x_range_start{ $period } +
+                                                $i * $x_range_bin{ $period } );
+    }
+
+    my $graph_path = $opt_r || $default_image_path;
+
+    $image->png( "$graph_path/$PROGNAME-$period-$timestamp.png",
+                                                        [ \@ticks, $graph ] );
+}
+
