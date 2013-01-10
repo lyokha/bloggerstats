@@ -4,7 +4,7 @@
 #         option -w). Program curl is used with sudo and requires sudoers
 #         support: to achieve this login as root and print in a terminal
 #
-#         visudo /etc/sudoers.d/users
+#         visudo -f /etc/sudoers.d/users
 #
 #         and put there lines
 #
