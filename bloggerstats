@@ -91,27 +91,13 @@ sub DecodeData
 {
     my ( $data ) = @_;
 
-    my $decoder = guess_encoding $data, qw'cp1251';
-
-    if ( ref $decoder )
+    foreach my $enc ( qw'cp1251 MacCyrillic' )
     {
-        $data = $decoder->decode( $data );
-    }
-    else
-    {
-        $decoder = guess_encoding $data, qw'MacCyrillic';
-
-        if ( ref $decoder )
-        {
-            $data = $decoder->decode( $data );
-        }
-        else
-        {
-            $data = decode 'utf8', $data;
-        }
+        my $decoder = guess_encoding $data, $enc;
+        return $decoder->decode( $data ) if ref $decoder;
     }
 
-    return $data;
+    return decode 'utf8', $data;
 }
 
 sub DecodeUrl
