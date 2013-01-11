@@ -18,6 +18,7 @@ use JSON qw'decode_json';
 use POSIX qw'ceil strftime';
 use URI::Escape qw'uri_unescape';
 use Encode qw'decode';
+use Encode::Guess;
 
 my $VERSION = "1.0";
 ( my $PROGNAME = $0 ) =~ s/.*\///;
@@ -86,6 +87,40 @@ sub PrintOverview
     print $period[ $_ ] . '  ' . $$ov[ $_ ] . "\n" for ( 1 .. 4 );
 }
 
+sub DecodeData
+{
+    my ( $data ) = @_;
+
+    my $decoder = guess_encoding $data, qw'cp1251';
+
+    if ( ref $decoder )
+    {
+        $data = $decoder->decode( $data );
+    }
+    else
+    {
+        $decoder = guess_encoding $data, qw'MacCyrillic';
+
+        if ( ref $decoder )
+        {
+            $data = $decoder->decode( $data );
+        }
+        else
+        {
+            $data = decode 'utf8', $data;
+        }
+    }
+
+    return $data;
+}
+
+sub DecodeUrl
+{
+    my ( $url ) = @_;
+
+    return DecodeData uri_unescape $url;
+}
+
 sub PrintData
 {
     my ( $layout, $max_length, $decode_urls ) = @_;
@@ -94,23 +129,26 @@ sub PrintData
 
     return unless defined $$layout[ 1 ] && @{ $$layout[ 1 ] } > 0;
 
-    if ( $opt_t )
+    my $table = Text::TabularDisplay->new( $$layout[ 0 ], '' ) if $opt_t;
+
+    foreach my $data ( @{ $$layout[ 1 ] } )
     {
-        my $table = Text::TabularDisplay->new( $$layout[ 0 ], '' );
-        $table->add( substr( $decode_urls && $$layout[ 0 ] eq 'URL' ?
-                        decode( 'utf8', uri_unescape( $$_[ $$layout[ 2 ] ] ) ) :
-                        $$_[ $$layout[ 2 ] ], 0, $max_length ),
-                     substr( $$_[ $$layout[ 3 ] ], 0, $max_length ) )
-                                                    foreach @{ $$layout[ 1 ] };
-        print $table->render . "\n";
-        return;
+        my $item = $decode_urls && $$layout[ 0 ] eq 'URL' ?
+                    DecodeUrl $$data[ $$layout[ 2 ] ] : $$data[ $$layout[ 2 ] ];
+
+        if ( $opt_t )
+        {
+            $table->add( substr( $item, 0, $max_length ),
+                         substr( $$data[ $$layout[ 3 ] ], 0, $max_length ) );
+        }
+        else
+        {
+            print substr( $item, 0, $max_length ) . ' ' .
+                  substr( $$data[ $$layout[ 3 ] ], 0, $max_length ) . "\n";
+        }
     }
 
-    print substr( $decode_urls && $$layout[ 0 ] eq 'URL' ?
-                        decode( 'utf8', uri_unescape( $$_[ $$layout[ 2 ] ] ) ) :
-                        $$_[ $$layout[ 2 ] ], 0, $max_length ) . '  ' .
-          substr( $$_[ $$layout[ 3 ] ], 0, $max_length ) . "\n"
-                                                    foreach @{ $$layout[ 1 ] };
+    print $table->render . "\n" if $opt_t;
 }
 
 sub CeilRound
