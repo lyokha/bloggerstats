@@ -345,6 +345,8 @@ if ( $opt_g )
     require Chart::Bars;
     require Time::Local;
     Time::Local->import( qw'timelocal' );
+    require Math::Prime::Util;
+    Math::Prime::Util->import( qw'factor' );
 
     use integer;
 
@@ -360,7 +362,12 @@ if ( $opt_g )
     my $timestamp = strftime( "%Y/%m/%d %H:%M:%S", localtime $now );
     my $x_skip    = @$graph / 4;
     my $max_y     = CeilRound( ( sort { $b <=> $a } @$graph )[ 0 ] );
-    my $y_skip    = $max_y / 8;
+    my $y_skip    = 1;
+    foreach my $factor ( factor( $max_y ) )
+    {
+        last if $max_y / $y_skip < 8;
+        $y_skip *= $factor;
+    }
 
     my $image = Chart::Bars->new( 800, 600 );
     $image->set( 'title' => "Visitors per $period ($timestamp)",
