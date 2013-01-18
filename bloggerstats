@@ -378,7 +378,7 @@ if ( $opt_g )
 {
     require Chart::Bars;
     require Time::Local;
-    Time::Local->import( qw'timelocal' );
+    Time::Local->import( qw'timelocal timegm' );
 
     use integer;
 
@@ -426,8 +426,8 @@ if ( $opt_g )
                                             $u_hour;
 
     ( $sec, $min, $hour, $day, $month, $year ) =
-                                            gmtime $x_range_start{ month };
-    $x_range_start{ month } = timelocal( 0, 0, 0, $day, $month, $year ) +
+                                            localtime $x_range_start{ month };
+    $x_range_start{ month } = timegm( 0, 0, 0, $day, $month, $year ) +
                                             $u_day;
 
     my %x_range_bin   = ( "now" => $u_min, "day" => $u_hour, "week" => $u_hour,
