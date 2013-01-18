@@ -160,6 +160,40 @@ sub CeilRound
     $value;
 }
 
+sub TicksInterval
+{
+    require Math::Prime::Util;
+    Math::Prime::Util->import( qw'factor' );
+
+    no integer;
+
+    my ( $max_value ) = @_;
+    my @factors = factor( $max_value );
+    my $accum = 1;
+
+    for ( my $i = 0; $i < @factors; ++$i )
+    {
+        last if $factors[ $i ] > 5;
+
+        if ( $factors[ $i ] == 5 )
+        {
+            @factors[ 0, $i ] = @factors[ $i, 0 ] if $accum > 3;
+            last;
+        }
+        $accum *= $factors[ $i ];
+    }
+
+    my $interval = 1;
+
+    foreach my $factor ( @factors )
+    {
+        last if $max_value / $interval < 8;
+        $interval *= $factor;
+    }
+
+    $interval;
+}
+
 
 # MAIN LOOP BEGIN
 
@@ -345,8 +379,6 @@ if ( $opt_g )
     require Chart::Bars;
     require Time::Local;
     Time::Local->import( qw'timelocal' );
-    require Math::Prime::Util;
-    Math::Prime::Util->import( qw'factor' );
 
     use integer;
 
@@ -362,12 +394,7 @@ if ( $opt_g )
     my $timestamp = strftime( "%Y/%m/%d %H:%M:%S", localtime $now );
     my $x_skip    = @$graph / 4;
     my $max_y     = CeilRound( ( sort { $b <=> $a } @$graph )[ 0 ] );
-    my $y_skip    = 1;
-    foreach my $factor ( factor( $max_y ) )
-    {
-        last if $max_y / $y_skip < 8;
-        $y_skip *= $factor;
-    }
+    my $y_skip    = TicksInterval $max_y;
 
     my $image = Chart::Bars->new( 800, 600 );
     $image->set( 'title' => "Visitors per $period ($timestamp)",
@@ -399,7 +426,7 @@ if ( $opt_g )
                                             $u_hour;
 
     ( $sec, $min, $hour, $day, $month, $year ) =
-                                            localtime $x_range_start{ month };
+                                            gmtime $x_range_start{ month };
     $x_range_start{ month } = timelocal( 0, 0, 0, $day, $month, $year ) +
                                             $u_day;
 
