@@ -169,25 +169,34 @@ sub TicksInterval
 
     my ( $max_value ) = @_;
     my @factors = factor( $max_value );
-    my $accum = 1;
 
-    for ( my $i = 0; $i < @factors; ++$i )
+    OUTER_FACTORS:
+    for ( my $i = 0; @factors > 2 * $i + 2; ++$i )
     {
-        last if $factors[ $i ] > 5;
+        my $accum = 1;
 
-        if ( $factors[ $i ] == 5 )
+        for ( my $j = 2 * $i; $j < @factors; ++$j )
         {
-            @factors[ 0, $i ] = @factors[ $i, 0 ] if $accum > 3;
-            last;
+            last OUTER_FACTORS if $factors[ $j ] > 5;
+
+            if ( $factors[ $j ] == 5 )
+            {
+                if ( $accum > 3 )
+                {
+                    splice @factors, $j, 1;
+                    splice @factors, 2 * $i + ( $i & 1 ? 1 : 0 ), 0, ( 5 );
+                }
+                last;
+            }
+            $accum *= $factors[ $j ];
         }
-        $accum *= $factors[ $i ];
     }
 
     my $interval = 1;
 
     foreach my $factor ( @factors )
     {
-        last if $max_value / $interval < 8;
+        last if $max_value / $interval < 10;
         $interval *= $factor;
     }
 
