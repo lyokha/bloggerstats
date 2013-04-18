@@ -222,11 +222,12 @@ do $conf or die "Configuration file '$conf' is not available";
 
 if ( $opt_w )
 {
-    my $sniffer   = 'sudo ngrep -q -A2 -l -Wbyline';
-    my $match     = 'POST';
-    my $cond      = "tcp and port 80 and \\( dst host $bloghost \\)";
-    my $packets   = 0;
-    my $post_data = 0;
+    chomp( my $sniffer = `which ngrep` );
+    $sniffer           = "sudo $sniffer -q -A2 -l -Wbyline";
+    my $match          = 'POST';
+    my $cond           = "tcp and port 80 and \\( dst host $bloghost \\)";
+    my $packets        = 0;
+    my $post_data      = 0;
 
     my ( $hdr_ctype, $hdr_xgwtpermut, $hdr_xgwtmodulebase, $hdr_cookie, $xsrf );
     my ( $cur_hdr, $cur_hdr_start ) = ( undef, '' );
