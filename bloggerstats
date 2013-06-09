@@ -436,7 +436,7 @@ if ( $opt_g )
                                             $u_hour;
 
     ( $sec, $min, $hour, $day, $month, $year ) =
-                                            localtime $x_range_start{ month };
+                                            gmtime $x_range_start{ month };
     $x_range_start{ month } = timegm( 0, 0, 0, $day, $month, $year ) +
                                             $u_day;
 
